@@ -16,22 +16,16 @@ frappe.ui.form.on('Process Order', {
 	},
 	refresh: function(frm){
 		if(!frm.doc.__islocal && frm.doc.status == 'Submitted'){
-			var start_btn = frm.add_custom_button(__('Start'), function(){
+			var start_btn = frm.add_custom_button(__('Complete'), function(){
 				prompt_for_qty(frm, "materials", "Enter Raw Material Quantity", true, function () {
-					process_production(frm, "Submitted");
+					prompt_for_qty(frm, "finished_products", "Enter Produced Quantity", true, function () {
+						prompt_for_hours(frm, function() {
+							process_production(frm, "Completed");
+						});
+					});
 				});
 			});
 			start_btn.addClass('btn-primary');
-		}
-		if(!frm.doc.__islocal && frm.doc.status == 'In Process'){
-			var finish_btn = frm.add_custom_button(__('Complete'), function(){
-				prompt_for_qty(frm, "finished_products", "Enter Produced Quantity", true, function () {
-						prompt_for_hours(frm, function() {
-							process_production(frm, "In Process");
-						});
-					});
-			});
-			finish_btn.addClass('btn-primary')
 		}
 	},
 	department: function(frm){
