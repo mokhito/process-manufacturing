@@ -10,12 +10,8 @@ from frappe import _
 
 class ProcessOrder(Document):
 	def on_submit(self):
-		if not self.wip_warehouse:
-			frappe.throw(_("Work-in-Progress Warehouse is required before Submit"))
 		if not self.fg_warehouse:
 			frappe.throw(_("Target Warehouse is required before Submit"))
-		if self.scrap and not self.scrap_warehouse:
-			frappe.throw(_("Scrap Warehouse is required before submit"))
 		frappe.db.set(self, 'status', 'Submitted')
 
 	def on_cancel(self):
@@ -27,8 +23,6 @@ class ProcessOrder(Document):
 		frappe.db.set(self, 'status', 'Cancelled')
 
 	def get_process_details(self):
-		#	Set costing_method
-		self.costing_method = frappe.db.get_value("Process Definition", self.process_name, "costing_method")
 		#	Set Child Tables
 		process = frappe.get_doc("Process Definition", self.process_name)
 		if process:
@@ -36,8 +30,6 @@ class ProcessOrder(Document):
 				self.add_item_in_table(process.materials, "materials")
 			if process.finished_products:
 				self.add_item_in_table(process.finished_products, "finished_products")
-			if process.scrap:
-				self.add_item_in_table(process.scrap, "scrap")
 
 	def start_finish_processing(self, status):
 		if status == "In Process":
@@ -47,23 +39,9 @@ class ProcessOrder(Document):
 		self.save()
 		return self.make_stock_entry(status)
 
-	def set_se_items_start(self, se):
-		#set source and target warehouse
-		se.from_warehouse = self.src_warehouse
-		se.to_warehouse = self.wip_warehouse
-		for item in self.materials:
-			if self.src_warehouse:
-				src_wh = self.src_warehouse
-			else:
-				src_wh = frappe.db.get_value("Item", item.item, "default_warehouse")
-			#create stock entry lines
-			se = self.set_se_items(se, item, src_wh, self.wip_warehouse, False)
-
-		return se
-
 	def set_se_items_finish(self, se):
 		#set from and to warehouse
-		se.from_warehouse = self.wip_warehouse
+		se.from_warehouse = self.src_warehouse
 		se.to_warehouse = self.fg_warehouse
 
 		se_materials = frappe.get_doc("Stock Entry",{"process_order": self.name, "docstatus": '1'})
@@ -82,16 +60,7 @@ class ProcessOrder(Document):
 				se = self.set_se_items(se, item, se.from_warehouse, None, False)
 				#TODO calc raw_material_cost
 
-		#no timesheet entries, calculate operating cost based on workstation hourly rate and process start, end
-		hourly_rate = frappe.db.get_value("Workstation", self.workstation, "hour_rate")
-		if hourly_rate:
-			if self.operation_hours > 0:
-				hours = self.operation_hours
-			else:
-				hours = time_diff_in_hours(self.end_dt, self.start_dt)
-				frappe.db.set(self, 'operation_hours', hours)
-			operating_cost = hours * float(hourly_rate)
-		production_cost = raw_material_cost + operating_cost
+		production_cost = raw_material_cost
 
 		#calc total_qty and total_sale_value
 		qty_of_total_production = 0
@@ -99,34 +68,15 @@ class ProcessOrder(Document):
 		for item in self.finished_products:
 			if item.quantity > 0:
 				qty_of_total_production = float(qty_of_total_production) + item.quantity
-				if self.costing_method == "Relative Sales Value":
-					sale_value_of_pdt = frappe.db.get_value("Item Price", {"item_code":item.item}, "price_list_rate")
-					if sale_value_of_pdt:
-						total_sale_value += float(sale_value_of_pdt) * item.quantity
-					else:
-						frappe.throw(_("Selling price not set for item {0}").format(item.item))
+				sale_value_of_pdt = frappe.db.get_value("Item Price", {"item_code":item.item}, "price_list_rate")
+				if sale_value_of_pdt:
+					total_sale_value += float(sale_value_of_pdt) * item.quantity
+				else:
+					frappe.throw(_("Selling price not set for item {0}").format(item.item))
 
-		value_scrap = frappe.db.get_value("Process Definition", self.process_name, "value_scrap")
-		if value_scrap:
-			for item in self.scrap:
-				if item.quantity > 0:
-					qty_of_total_production = float(qty_of_total_production + item.quantity)
-					if self.costing_method == "Relative Sales Value":
-						sale_value_of_pdt = frappe.db.get_value("Item Price", {"item_code":item.item}, "price_list_rate")
-						if sale_value_of_pdt:
-							total_sale_value += float(sale_value_of_pdt) * item.quantity
-						else:
-							frappe.throw(_("Selling price not set for item {0}").format(item.item))
-
-		#add Stock Entry Items for produced goods and scrap
+		#add Stock Entry Items for produced goods
 		for item in self.finished_products:
 			se = self.set_se_items(se, item, None, se.to_warehouse, True, qty_of_total_production, total_sale_value, production_cost)
-
-		for item in self.scrap:
-			if value_scrap:
-				se = self.set_se_items(se, item, None, self.scrap_warehouse, True, qty_of_total_production, total_sale_value, production_cost)
-			else:
-				se = self.set_se_items(se, item, None, self.scrap_warehouse, False)
 
 		return se
 
@@ -166,21 +116,13 @@ class ProcessOrder(Document):
 			for f in ("uom", "stock_uom", "description", "item_name", "expense_account",
 			"cost_center", "conversion_factor"):
 				se_item.set(f, item_details.get(f))
-
-			if calc_basic_rate:
-				if self.costing_method == "Physical Measurement":
-					se_item.basic_rate = production_cost/qty_of_total_production
-				elif self.costing_method == "Relative Sales Value":
-					sale_value_of_pdt = frappe.db.get_value("Item Price", {"item_code":item.item}, "price_list_rate")
-					se_item.basic_rate = (float(sale_value_of_pdt) * float(production_cost)) / float(total_sale_value)
+				
+				se_item.basic_rate = production_cost/qty_of_total_production
 		return se
 
 	def make_stock_entry(self, status):
 		stock_entry = frappe.new_doc("Stock Entry")
 		stock_entry.process_order = self.name
-		if status == "Submitted":
-			stock_entry.purpose = "Material Transfer for Manufacture"
-			stock_entry = self.set_se_items_start(stock_entry)
 		if status == "In Process":
 			stock_entry.purpose = "Manufacture"
 			stock_entry = self.set_se_items_finish(stock_entry)

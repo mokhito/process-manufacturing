@@ -26,18 +26,10 @@ frappe.ui.form.on('Process Order', {
 		if(!frm.doc.__islocal && frm.doc.status == 'In Process'){
 			var finish_btn = frm.add_custom_button(__('Complete'), function(){
 				prompt_for_qty(frm, "finished_products", "Enter Produced Quantity", true, function () {
-					if(frm.doc.scrap){
-							prompt_for_qty(frm, "scrap", "Enter Scrap Quantity", false, function() {
-								prompt_for_hours(frm, function() {
-									process_production(frm, "In Process");
-								});
-							});
-						}else {
-							prompt_for_hours(frm, function() {
-								process_production(frm, "In Process");
-							});
-						}
+						prompt_for_hours(frm, function() {
+							process_production(frm, "In Process");
 						});
+					});
 			});
 			finish_btn.addClass('btn-primary')
 		}
@@ -51,9 +43,7 @@ frappe.ui.form.on('Process Order', {
 					name: frm.doc.department
 				},
 				callback: function (data) {
-					frappe.model.set_value(frm.doctype,frm.docname, "wip_warehouse", data.message.wip_warehouse);
 					frappe.model.set_value(frm.doctype,frm.docname, "fg_warehouse", data.message.fg_warehouse);
-					frappe.model.set_value(frm.doctype,frm.docname, "scrap_warehouse", data.message.scrap_warehouse);
 					frappe.model.set_value(frm.doctype,frm.docname, "src_warehouse", data.message.src_warehouse);
 				}
 			});
@@ -65,9 +55,7 @@ frappe.ui.form.on('Process Order', {
 				doc: frm.doc,
 				method: "get_process_details",
 				callback: function(r) {
-					refresh_field("costing_method");
 					refresh_field("finished_products");
-					refresh_field("scrap");
 					refresh_field("materials");
 				}
 			});
