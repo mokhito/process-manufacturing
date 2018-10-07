@@ -9,11 +9,10 @@ frappe.listview_settings['Process Order'] = {
 			return [__("Not Started"), "orange", "status,=,Submitted"];
 		} else {
 			return [__(doc.status), {
-				"Draft": "red",
-				"Not Started": "red",
-				"In Process": "orange",
+				"Draft": "orange",
+				"Scheduled": "darkgrey",
 				"Completed": "green",
-				"Cancelled": "darkgrey"
+				"Cancelled": "red"
 			}[doc.status], "status,=," + doc.status];
 		}
 	}

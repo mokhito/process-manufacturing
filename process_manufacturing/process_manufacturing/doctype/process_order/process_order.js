@@ -85,7 +85,7 @@ var prompt_for_qty = function (frm, table, title, qty_required, callback) {
 				frappe.model.set_value(line.doctype, line.name, "quantity", data[line.name]);
 			});
 			if (qty_required && !item_qty){
-				frappe.throw("Cannot start/finish Process Order with zero quantity");
+				frappe.throw("Cannot complete Process Order with zero quantity.");
 			}
 			callback();
 		},

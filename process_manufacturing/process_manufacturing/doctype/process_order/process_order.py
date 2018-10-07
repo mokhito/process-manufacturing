@@ -32,12 +32,13 @@ class ProcessOrder(Document):
 				self.add_item_in_table(process.finished_products, "finished_products")
 
 	def start_finish_processing(self, status):
-		if status == "In Process":
+		if status == "Scheduled":
 			if not self.end_dt:
 				self.end_dt = get_datetime()
-		self.flags.ignore_validate_update_after_submit = True
-		self.save()
-		return self.make_stock_entry(status)
+			self.flags.ignore_validate_update_after_submit = True
+			self.save()
+			return self.make_stock_entry(status)
+		return None
 
 	def set_se_items_finish(self, se):
 		#set from and to warehouse
@@ -82,16 +83,8 @@ class ProcessOrder(Document):
 
 	def set_se_items(self, se, item, s_wh, t_wh, calc_basic_rate=False, qty_of_total_production=None, total_sale_value=None, production_cost=None):
 		if item.quantity > 0:
-			expense_account, cost_center = frappe.db.get_values("Company", self.company, \
-					["default_expense_account", "cost_center"])[0]
 			item_name, stock_uom, description, item_expense_account, item_cost_center = frappe.db.get_values("Item", item.item, \
 			["item_name", "stock_uom", "description", "expense_account", "buying_cost_center"])[0]
-
-			if not expense_account and not item_expense_account:
-				frappe.throw(_("Please update default Default Cost of Goods Sold Account for company {0}").format(self.company))
-
-			if not cost_center and not item_cost_center:
-				frappe.throw(_("Please update default Cost Center for company {0}").format(self.company))
 
 			se_item = se.append("items")
 			se_item.item_code = item.item
@@ -103,8 +96,8 @@ class ProcessOrder(Document):
 			se_item.uom = stock_uom
 			se_item.stock_uom = stock_uom
 
-			se_item.expense_account = item_expense_account or expense_account
-			se_item.cost_center = item_cost_center or cost_center
+			se_item.expense_account = item_expense_account
+			se_item.cost_center = item_cost_center
 
 			# in stock uom
 			se_item.transfer_qty = item.quantity
@@ -123,7 +116,7 @@ class ProcessOrder(Document):
 	def make_stock_entry(self, status):
 		stock_entry = frappe.new_doc("Stock Entry")
 		stock_entry.process_order = self.name
-		if status == "In Process":
+		if status == "Scheduled":
 			stock_entry.purpose = "Manufacture"
 			stock_entry = self.set_se_items_finish(stock_entry)
 
@@ -156,10 +149,9 @@ def validate_material_qty(se_items, po_items):
 def manage_se_submit(se, po):
 	if po.docstatus == 0:
 		frappe.throw(_("Submit the  Process Order {0} to make Stock Entries").format(po.name))
-	if po.status == "Submitted":
-		po.status = "In Process"
-		po.start_dt = get_datetime()
-	elif po.status == "In Process":
+	if po.status == "Draft":
+		po.status = "Scheduled"
+	if po.status == "Scheduled":
 		po.status = "Completed"
 	elif po.status in ["Completed", "Cancelled"]:
 		frappe.throw("You cannot make entries against Completed/Cancelled Process Orders")
@@ -167,22 +159,20 @@ def manage_se_submit(se, po):
 	po.save()
 
 def manage_se_cancel(se, po):
-	if po.status == "In Process":
-		po.status = "Submitted"
-	elif(po.status == "Completed"):
+	if(po.status == "Completed"):
 		try:
 			validate_material_qty(se.items, po.finished_products)
-			po.status = "In Process"
+			po.status = "Scheduled"
 		except:
 			frappe.throw("Please cancel the production stock entry first.")
 	else:
-		frappe.throw("Process order status must be In Process or Completed")
+		frappe.throw("Process order status must be completed.")
 	po.flags.ignore_validate_update_after_submit = True
 	po.save()
 
 def validate_se_qty(se, po):
 	validate_material_qty(se.items, po.materials)
-	if po.status == "In Process":
+	if po.status == "Submitted":
 		validate_material_qty(se.items, po.finished_products)
 		validate_material_qty(se.items, po.scrap)
 
@@ -191,9 +181,7 @@ def manage_se_changes(doc, method):
 	if doc.process_order:
 		po = frappe.get_doc("Process Order", doc.process_order)
 		if(method=="on_submit"):
-			if po.status == "Submitted":
-				validate_items(doc.items, po.materials)
-			elif po.status == "In Process":
+			if po.status == "Scheduled":
 				po_items = po.materials
 				po_items.extend(po.finished_products)
 				po_items.extend(po.scrap)
