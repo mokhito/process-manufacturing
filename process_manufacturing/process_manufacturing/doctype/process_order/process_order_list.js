@@ -6,7 +6,7 @@ frappe.listview_settings['Process Order'] = {
 	filters: [["status", "!=", "Cancelled"]],
 	get_indicator: function(doc) {
 		if(doc.status==="Submitted") {
-			return [__("Not Started"), "orange", "status,=,Submitted"];
+			return [__("Scheduled"), "darkgrey", "status,=,Submitted"];
 		} else {
 			return [__(doc.status), {
 				"Draft": "orange",
