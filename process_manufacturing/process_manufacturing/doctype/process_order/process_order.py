@@ -32,36 +32,17 @@ class ProcessOrder(Document):
 				self.add_item_in_table(process.finished_products, "finished_products")
 
 	def start_finish_processing(self, status):
-		if status == "Scheduled":
-			if not self.end_dt:
-				self.end_dt = get_datetime()
-			self.flags.ignore_validate_update_after_submit = True
-			self.save()
-			return self.make_stock_entry(status)
-		return None
+		self.end_dt = get_datetime()
+		self.flags.ignore_validate_update_after_submit = True
+		self.save()
+		return self.make_stock_entry(status)
 
 	def set_se_items_finish(self, se):
-		#set from and to warehouse
-		se.from_warehouse = self.src_warehouse
-		se.to_warehouse = self.fg_warehouse
+		# Add materials to Stock Entry
+		for item in self.materials:
+			se = self.set_se_items(se, item)
 
-		se_materials = frappe.get_doc("Stock Entry",{"process_order": self.name, "docstatus": '1'})
-		#get items to consume from previous stock entry or append to items
-		#TODO allow multiple raw material transfer
-		raw_material_cost = 0
-		operating_cost = 0
-		if se_materials:
-			raw_material_cost = se_materials.total_incoming_value
-			se.items = se_materials.items
-			for item in se.items:
-				item.s_warehouse = se.from_warehouse
-				item.t_warehouse = None
-		else:
-			for item in self.materials:
-				se = self.set_se_items(se, item, se.from_warehouse, None, False)
-				#TODO calc raw_material_cost
-
-		production_cost = raw_material_cost
+		production_cost = 0
 
 		#calc total_qty and total_sale_value
 		qty_of_total_production = 0
@@ -75,13 +56,13 @@ class ProcessOrder(Document):
 				else:
 					frappe.throw(_("Selling price not set for item {0}").format(item.item))
 
-		#add Stock Entry Items for produced goods
+		# Add produced items to Stock Entry
 		for item in self.finished_products:
-			se = self.set_se_items(se, item, None, se.to_warehouse, True, qty_of_total_production, total_sale_value, production_cost)
+			se = self.set_se_items(se, item, False)
 
 		return se
 
-	def set_se_items(self, se, item, s_wh, t_wh, calc_basic_rate=False, qty_of_total_production=None, total_sale_value=None, production_cost=None):
+	def set_se_items(self, se, item, materials=True):
 		if item.quantity > 0:
 			item_name, stock_uom, description, item_expense_account, item_cost_center = frappe.db.get_values("Item", item.item, \
 			["item_name", "stock_uom", "description", "expense_account", "buying_cost_center"])[0]
@@ -89,8 +70,6 @@ class ProcessOrder(Document):
 			se_item = se.append("items")
 			se_item.item_code = item.item
 			se_item.qty = item.quantity
-			se_item.s_warehouse = s_wh
-			se_item.t_warehouse = t_wh
 			se_item.item_name = item_name
 			se_item.description = description
 			se_item.uom = stock_uom
@@ -103,22 +82,32 @@ class ProcessOrder(Document):
 			se_item.transfer_qty = item.quantity
 			se_item.conversion_factor = 1.00
 
-			item_details = se.run_method( "get_item_details",args = (frappe._dict(
-			{"item_code": item.item, "company": self.company, "uom": stock_uom, 's_warehouse': s_wh})), for_update=True)
+			item_details = se.run_method("get_item_details", args = (frappe._dict(
+			{"item_code": item.item, "company": self.company, "uom": stock_uom})), for_update=True)
+
+			item_defaults = frappe.get_doc("Item", item.item)
+
+			print(item_defaults)
 
 			for f in ("uom", "stock_uom", "description", "item_name", "expense_account",
 			"cost_center", "conversion_factor"):
 				se_item.set(f, item_details.get(f))
-				
-				se_item.basic_rate = production_cost/qty_of_total_production
+				se_item.basic_rate = 0
+
+			if materials:
+				se_item.set("s_warehouse", item_defaults.get("default_warehouse"))
+				se_item.set("t_warehouse", None)
+			else:
+				se_item.set("s_warehouse", None)
+				se_item.set("t_warehouse", item_defaults.get("default_warehouse"))
+
 		return se
 
 	def make_stock_entry(self, status):
 		stock_entry = frappe.new_doc("Stock Entry")
 		stock_entry.process_order = self.name
-		if status == "Scheduled":
-			stock_entry.purpose = "Manufacture"
-			stock_entry = self.set_se_items_finish(stock_entry)
+		stock_entry.purpose = "Manufacture"
+		stock_entry = self.set_se_items_finish(stock_entry)
 
 		return stock_entry.as_dict()
 
@@ -149,10 +138,9 @@ def validate_material_qty(se_items, po_items):
 def manage_se_submit(se, po):
 	if po.docstatus == 0:
 		frappe.throw(_("Submit the  Process Order {0} to make Stock Entries").format(po.name))
-	if po.status == "Draft":
-		po.status = "Scheduled"
-	if po.status == "Scheduled":
+	if po.status == "Submitted":
 		po.status = "Completed"
+		po.start_dt = get_datetime()
 	elif po.status in ["Completed", "Cancelled"]:
 		frappe.throw("You cannot make entries against Completed/Cancelled Process Orders")
 	po.flags.ignore_validate_update_after_submit = True
@@ -162,7 +150,7 @@ def manage_se_cancel(se, po):
 	if(po.status == "Completed"):
 		try:
 			validate_material_qty(se.items, po.finished_products)
-			po.status = "Scheduled"
+			po.status = "Submitted"
 		except:
 			frappe.throw("Please cancel the production stock entry first.")
 	else:
@@ -174,17 +162,15 @@ def validate_se_qty(se, po):
 	validate_material_qty(se.items, po.materials)
 	if po.status == "Submitted":
 		validate_material_qty(se.items, po.finished_products)
-		validate_material_qty(se.items, po.scrap)
 
 @frappe.whitelist()
 def manage_se_changes(doc, method):
 	if doc.process_order:
 		po = frappe.get_doc("Process Order", doc.process_order)
 		if(method=="on_submit"):
-			if po.status == "Scheduled":
+			if po.status == "Submitted":
 				po_items = po.materials
 				po_items.extend(po.finished_products)
-				po_items.extend(po.scrap)
 				validate_items(doc.items, po_items)
 			validate_se_qty(doc, po)
 			manage_se_submit(doc, po)
