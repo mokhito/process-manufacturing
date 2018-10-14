@@ -10,8 +10,6 @@ from frappe import _
 
 class ProcessOrder(Document):
 	def on_submit(self):
-		if not self.fg_warehouse:
-			frappe.throw(_("Target Warehouse is required before Submit"))
 		frappe.db.set(self, 'status', 'Submitted')
 
 	def on_cancel(self):
